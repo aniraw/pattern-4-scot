@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:batch="http://www.mulesoft.org/schema/mule/batch"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:vm="http://www.mulesoft.org/schema/mule/vm" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<vm:config name="VM_Config" doc:name="VM Config" doc:id="1cf2cac7-78d1-4c03-ad2a-83349bc304f7" >
+		<vm:queues >
+			<vm:queue queueName="filesBatchQ" queueType="PERSISTENT" maxOutstandingMessages="1000" />
+		</vm:queues>
+	</vm:config>
+	<os:object-store name="TDXRunResultObject_store" doc:name="Object store" doc:id="5a39d3d2-ca0c-4d64-9188-8e227431af15" />
+	<flow name="tdx-api-impl-tdxfiles" doc:id="85fcf157-75ec-4887-8e04-df2b74b6a613" >
+		<logger level="INFO" doc:name="inside tdxfiles" doc:id="a59d84e7-0442-4662-8ca5-24c4fe641c9b" message="inside tdxfiles !!!"/>
+		<foreach doc:name="For Each" doc:id="9acb7332-8b39-4dcf-9eb4-97e480e9b2e9" collection="#[payload.arguments.infocards]" batchSize="5">
+			<ee:transform doc:name="Transform Message" doc:id="e209549c-7ea7-4ee5-a077-05e4e120ea3d" >
+				<ee:message >
+					<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"key": correlationId,
+	"batch-files": payload
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+			<vm:publish doc:name="filesBatchQ" doc:id="e734c36d-fee4-46da-8d0f-43d69a072b43" config-ref="VM_Config" queueName="filesBatchQ" timeout="#[1]" timeoutUnit="HOURS"/>
+		</foreach>
+		<ee:transform doc:name="return requestNumber" doc:id="86e39336-32e4-4dfe-9a0c-b7a6959a77c8" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+		"requestNumber" : correlationId, 
+		"receivedInfoCards": sizeOf(payload.arguments.infocards),
+		"status": "Submitted",
+		"processedTotal": 0,
+		"success": 0,
+		"failure": 0,
+		"batchStartTime" : now() >> "US/Mountain"
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<os:store doc:name="Store" doc:id="b6ec83c7-c1db-4a5a-bebb-04e5731d995b" key="#[correlationId]" objectStore="TDXRunResultObject_store">
+			<os:value><![CDATA[#[output application/java --- [payload]]]]></os:value>
+		</os:store>
+	</flow>
+	<flow name="tdx-api-impl-process-filesBatchLoop" doc:id="01361504-0d95-49e0-8092-773952d80ce9" >
+		<vm:listener queueName="filesBatchQ" doc:name="filesBatchQ" doc:id="15102488-d7a3-49b3-b382-8d88121cad7f" config-ref="VM_Config" numberOfConsumers="1" timeout="1" timeoutUnit="HOURS"/>
+		<ee:transform doc:name="Transform Message" doc:id="1e0d98c3-6e54-4d19-bdf1-90522d9dec48" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+---
+payload."batch-files"]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<batch:job jobName="tdx-api-implBatch_Job" doc:id="ee511260-7335-4fea-a4df-842188162b82" blockSize="1">
+			<batch:process-records >
+				<batch:step name="Batch_Step" doc:id="efa253a1-dce8-420f-bc0b-f7f365c04fed" >
+					<flow-ref doc:name="processFile" doc:id="ea92c296-a082-4e99-bca2-6822bf28175f" name="tdx-api-impl-processFile"/>
+					<batch:aggregator doc:name="Batch Aggregator" doc:id="34223a75-7d45-4396-bee7-42b4091a8ff4" size="5">
+						<set-variable value="#[payload]" doc:name="batchResult" doc:id="d3366969-0d6d-464f-8250-38f9aaa47211" variableName="batchResult"/>
+						<logger level="INFO" doc:name="Log aggregated payload" doc:id="a2520527-dff7-4aee-a322-003414e8a944" message="#[output application/json --- payload]"/>
+						<ee:transform doc:name="wait 20 seconds" doc:id="44889bad-cab7-4ba6-b8a6-3de40b068e5f">
+							<ee:message>
+								<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+
+import * from dw::Runtime
+
+---
+{"user":1} wait 20000]]></ee:set-payload>
+							</ee:message>
+						</ee:transform>
+						<os:retrieve doc:name="Retrieve Status" doc:id="935ee89b-131c-4a75-838a-fb9feb31ea0c" key="#[correlationId]" objectStore="TDXRunResultObject_store" />
+						<logger level="INFO" doc:name="Log Status from ObjectStore" doc:id="de5a83eb-fbbc-4a37-94d1-fd941c2587a2" message="#[output application/json --- payload]"/>
+						<os:store doc:name="Store Status" doc:id="b3efe4fc-c67c-4aaf-802b-bac221436d53" key="#[correlationId]" objectStore="TDXRunResultObject_store">
+					<os:value><![CDATA[#[payload ++ vars.batchResult]]]></os:value>
+				</os:store>
+					</batch:aggregator>
+				</batch:step>
+			</batch:process-records>
+		</batch:job>
+	</flow>
+	<flow name="tdx-api-impl-processFile" doc:id="91cdd0df-94f1-4171-82be-3c380cef9668" >
+		<logger level="INFO" doc:name="Logger" doc:id="7d93c102-f17f-4b7b-9b51-1074bcda6c45" message="processFile: #[payload.infocard_num]"/>
+		<set-variable value="#[payload]" doc:name="currentInfoCard" doc:id="54dca1e3-a068-4a2c-8c44-263da4bfdeef" variableName="currentInfoCard"/>
+		<choice doc:name="Choice" doc:id="555f9430-c5de-47e9-a87c-5aa4e1f607e0" >
+			<when expression='#[upper(vars.currentInfoCard.fileType) == "PDF"]'>
+				<flow-ref doc:name="Pull PDF" doc:id="c9580f9f-7aec-4342-aac0-a50fcf7e84b2" name="tdx-api-impl-process-pdf"/>
+				<ee:transform doc:name="Transform Message" doc:id="f3f35ea7-65b5-4f18-bb48-8b7018ed99fd">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+	"inforcard_num": vars.currentInfoCard.infocard_num,
+	"success" : 1,
+	"result":"NA"
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+			</when>
+			<when expression='#[upper(vars.currentInfoCard.fileType) == "NATIVE"]'>
+				<flow-ref doc:name="Pull Native" doc:id="6045a7df-996d-4e0b-bfe0-0bf7c87d7cfc" name="tdx-api-impl-process-native"/>
+				<ee:transform doc:name="Transform Message" doc:id="d71480b3-8997-4be8-b683-2357e385f7f3" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+---
+{
+	"inforcard_num": vars.currentInfoCard.infocard_num,
+	"success" : 1,
+	"result":"NA"
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</when>
+			<otherwise >
+				<ee:transform doc:name="Transform Message" doc:id="5108dd1a-66ac-4c37-b5de-37a9cfbd8dcf" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+---
+{
+	"inforcard_num": vars.currentInfoCard.infocard_num,
+	"failure" : 1,
+	"result": "Unknown file-Type"
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</otherwise>
+		</choice>
+		<error-handler >
+			<on-error-continue enableNotifications="true" logException="false" doc:name="On Error Continue" doc:id="f7f6e7d9-26bd-4dd6-a8e1-7da500e060d8">
+				<ee:transform doc:name="Transform Message" doc:id="b0d007c6-89fd-4636-94f7-42e45862204f" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+---
+{
+	"inforcard_num": vars.currentInfoCard.infocard_num,
+	"failure" : 1,
+	"result": error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+	<flow name="tdx-api-impl-tdxfiles-status" doc:id="19e4528a-b520-4cc1-b05e-4ffbe878edca" >
+		<set-variable value="#[payload.requestNumber]" doc:name="requestNumber" doc:id="ad889cd5-dcdd-443c-8f7d-0cdd423493a5" variableName="requestNumber"/>
+		<os:retrieve doc:name="Retrieve Status" doc:id="3689b35a-eff1-4b0b-a744-6f9bd486b16a" key="#[vars.requestNumber]" objectStore="TDXRunResultObject_store"/>
+		<ee:transform doc:name="return requestNumber status" doc:id="a23c0ab0-8fdb-4e28-bd1b-7ae5339b3271" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"requestNumber" : vars.requestNumber,
+	"receivedInfoCards" : payload[0].receivedInfoCards,
+	"status": payload[0].status,
+    "processedTotal" : sum(payload.success) + 
+    sum(payload.failure),
+    "success" : sum(payload.success),
+    "failure" :  sum(payload.failure),
+    "infoCards":[
+        payload[1 to -1] map{
+            "infoCardNum": $.inforcard_num,
+            "infoCardId": $.inforcard_id,
+            "result": $.result
+        }
+    ]
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler >
+			<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="b5661217-5b9b-493d-a832-2afe9ba9135e" >
+				<ee:transform doc:name="return requestNumber status" doc:id="ef1c722b-c170-4094-8cc1-cde5b5b21481" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"requestNumber" : vars.requestNumber,
+	"receivedInfoCards" : 0,
+	"status": "requestNumber not found !!!",
+    "processedTotal" : 0,
+    "success" : 0,
+    "failure" :  0,
+    "infoCards":[]
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+	<sub-flow name="tdx-api-impl-process-pdf" doc:id="8aab503f-69de-4d4a-9f34-75c87d1aba88" >
+		<logger level="INFO" doc:name="process-pdf" doc:id="323293c3-d0d5-495c-b138-27985c53b487" message="process-pdf !!!"/>
+		<logger level="INFO" doc:name="currentInfoCard" doc:id="0aa0411a-5139-4bff-91df-25e27eb1a1e7" message="#[output application/json --- vars.currentInfoCard]"/>
+		<choice doc:name="Choice" doc:id="a5e6f997-f923-4a84-a10e-18fdced10008">
+			<when expression='#[vars.currentInfoCard.infocard_id == "4XWJED3MYJGW3KDL75"]'>
+				<raise-error doc:name="Raise error" doc:id="13e98ded-e7d4-4914-aa57-2dd7ca1cc4cb" type="MC:FILE_NOT_FOUND" description="PDF File not found in master-control"/>
+			</when>
+		</choice>
+	</sub-flow>
+	<sub-flow name="tdx-api-impl-process-native" doc:id="5dbd4db9-3e09-4bd8-b1df-34b5a1a60888" >
+		<logger level="INFO" doc:name="process-native" doc:id="7d2dab65-18f7-4495-8cf5-d870cb2cef48" message="process-native !!!"/>
+		<logger level="INFO" doc:name="currentInfoCard" doc:id="36026c30-7d79-4428-9752-3c420a44e2e2" message="#[output application/json --- vars.currentInfoCard]"/>
+		<choice doc:name="Choice" doc:id="1d3a9886-68a6-4a12-ba48-987dd4336b31">
+			<when expression='#[vars.currentInfoCard.infocard_id == "56820007029A404B10"]'>
+				<raise-error doc:name="Raise error" doc:id="4f97e3d7-a05a-4917-86e9-e85bf86a2d23" type="MC:FILE_NOT_FOUND" description="Native File not found in master-control" />
+			</when>
+		</choice>
+	</sub-flow>
+</mule>
